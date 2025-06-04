@@ -1,56 +1,138 @@
+import re
+import time
 import streamlit as st
 from openai import OpenAI
 
-# Show title and description.
-st.title("💬 Chatbot")
-st.write(
-    "This is a simple chatbot that uses OpenAI's GPT-3.5 model to generate responses. "
-    "To use this app, you need to provide an OpenAI API key, which you can get [here](https://platform.openai.com/account/api-keys). "
-    "You can also learn how to build this app step by step by [following our tutorial](https://docs.streamlit.io/develop/tutorials/llms/build-conversational-apps)."
-)
+st.set_page_config(page_title="WatkiBot", page_icon="⚖️", layout="centered")
 
-# Ask user for their OpenAI API key via `st.text_input`.
-# Alternatively, you can store the API key in `./.streamlit/secrets.toml` and access it
-# via `st.secrets`, see https://docs.streamlit.io/develop/concepts/connections/secrets-management
-openai_api_key = st.text_input("OpenAI API Key", type="password")
+# Gather API key from Streamlit secrets or user input
+openai_api_key = st.secrets.get("OPENAI_API_KEY")
 if not openai_api_key:
-    st.info("Please add your OpenAI API key to continue.", icon="🗝️")
-else:
+    openai_api_key = st.text_input("OpenAI API Key", type="password")
+if not openai_api_key:
+    st.stop()
 
-    # Create an OpenAI client.
-    client = OpenAI(api_key=openai_api_key)
+client = OpenAI(api_key=openai_api_key)
+ASSISTANT_ID = st.secrets.get("ASSISTANT_ID", "asst_QD4XWA2zINlHoh8llg7jcbpK")
 
-    # Create a session state variable to store the chat messages. This ensures that the
-    # messages persist across reruns.
-    if "messages" not in st.session_state:
-        st.session_state.messages = []
+# Available cases
+case_list = [
+    "Ortiz, Margarita",
+    "Newman, Al",
+    "Kelvin, Douglas",
+    "Jungk, Heidi",
+    "Gomez, Juan",
+    "Ferguson, Robert",
+    "Curnow, Robert",
+    "Adams, Guy",
+]
 
-    # Display the existing chat messages via `st.chat_message`.
-    for message in st.session_state.messages:
-        with st.chat_message(message["role"]):
-            st.markdown(message["content"])
+# Session state stores a mapping from case name to its messages and thread id
+if "cases" not in st.session_state:
+    st.session_state.cases = {}
 
-    # Create a chat input field to allow the user to enter a message. This will display
-    # automatically at the bottom of the page.
-    if prompt := st.chat_input("What is up?"):
+# Currently selected case
+def init_case(case_name: str):
+    if case_name not in st.session_state.cases:
+        thread = client.beta.threads.create()
+        st.session_state.cases[case_name] = {
+            "thread_id": thread.id,
+            "messages": [],
+        }
 
-        # Store and display the current prompt.
-        st.session_state.messages.append({"role": "user", "content": prompt})
-        with st.chat_message("user"):
-            st.markdown(prompt)
+if "selected_case" not in st.session_state:
+    st.session_state.selected_case = case_list[0]
+init_case(st.session_state.selected_case)
 
-        # Generate a response using the OpenAI API.
-        stream = client.chat.completions.create(
-            model="gpt-3.5-turbo",
-            messages=[
-                {"role": m["role"], "content": m["content"]}
-                for m in st.session_state.messages
-            ],
-            stream=True,
+
+# Helper to send a message to OpenAI using the thread for the selected case
+
+def send_message(case_name: str, content: str) -> str:
+    case = st.session_state.cases[case_name]
+
+    client.beta.threads.messages.create(
+        thread_id=case["thread_id"],
+        role="user",
+        content=content,
+    )
+
+    run = client.beta.threads.runs.create(
+        thread_id=case["thread_id"], assistant_id=ASSISTANT_ID
+    )
+
+    timeout = 60
+    start = time.time()
+    while time.time() - start < timeout:
+        status = client.beta.threads.runs.retrieve(
+            thread_id=case["thread_id"], run_id=run.id
         )
+        if status.status == "completed":
+            messages = client.beta.threads.messages.list(
+                thread_id=case["thread_id"], order="desc"
+            )
+            for msg in messages.data:
+                if msg.role == "assistant":
+                    response = " ".join(
+                        part.text.value for part in msg.content if part.type == "text"
+                    )
+                    cleaned = re.sub(r"【\d+:\d+†source】", "", response).strip()
+                    return cleaned
+        elif status.status == "failed":
+            return "❌ WatkiBot failed to respond. Please retry."
+        time.sleep(1)
+    return "❌ WatkiBot timed out. Please retry."
 
-        # Stream the response to the chat using `st.write_stream`, then store it in 
-        # session state.
-        with st.chat_message("assistant"):
-            response = st.write_stream(stream)
-        st.session_state.messages.append({"role": "assistant", "content": response})
+
+# Sidebar with case selection and quick actions
+with st.sidebar:
+    st.header("🗂️ Client Tools")
+    selected = st.selectbox(
+        "Select Client", case_list, index=case_list.index(st.session_state.selected_case)
+    )
+    if selected != st.session_state.selected_case:
+        st.session_state.selected_case = selected
+        init_case(selected)
+        st.rerun()
+
+    if st.button("🩺 Summarize Medical Reports"):
+        st.session_state.cases[selected]["messages"].append(
+            {"role": "user", "content": f"Summarize medical reports for {selected}"}
+        )
+        st.rerun()
+
+    if st.button("💥 List Key Injuries"):
+        st.session_state.cases[selected]["messages"].append(
+            {"role": "user", "content": f"List all known injuries for {selected}"}
+        )
+        st.rerun()
+
+    if st.button("📄 Suggest Stipulations"):
+        st.session_state.cases[selected]["messages"].append(
+            {
+                "role": "user",
+                "content": f"Suggest WCAB stipulations for {selected} including PD rating",
+            }
+        )
+        st.rerun()
+
+
+# Display messages for the current case
+for message in st.session_state.cases[st.session_state.selected_case]["messages"]:
+    with st.chat_message("user" if message["role"] == "user" else "assistant"):
+        st.markdown(message["content"])
+
+# Input from user
+prompt = st.chat_input("Ask WatkiBot something...")
+if prompt:
+    st.session_state.cases[st.session_state.selected_case]["messages"].append(
+        {"role": "user", "content": prompt}
+    )
+    st.rerun()
+
+# If last message is from user, generate response
+case_data = st.session_state.cases[st.session_state.selected_case]
+if case_data["messages"] and case_data["messages"][-1]["role"] == "user":
+    with st.spinner("🧠 WatkiBot is thinking..."):
+        reply = send_message(st.session_state.selected_case, case_data["messages"][-1]["content"])
+        case_data["messages"].append({"role": "assistant", "content": reply})
+        st.rerun()
