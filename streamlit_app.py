@@ -1,3 +1,5 @@
+"""Streamlit interface for the WatkiBot legal assistant."""
+
 import re
 import time
 import streamlit as st
@@ -14,6 +16,8 @@ if not openai_api_key:
 
 client = OpenAI(api_key=openai_api_key)
 ASSISTANT_ID = st.secrets.get("ASSISTANT_ID", "asst_QD4XWA2zINlHoh8llg7jcbpK")
+
+TIMEOUT = 60
 
 # Available cases
 case_list = [
@@ -48,6 +52,8 @@ init_case(st.session_state.selected_case)
 # Helper to send a message to OpenAI using the thread for the selected case
 
 def send_message(case_name: str, content: str) -> str:
+    """Send a user message and return the assistant reply for the case."""
+
     case = st.session_state.cases[case_name]
 
     client.beta.threads.messages.create(
@@ -60,9 +66,8 @@ def send_message(case_name: str, content: str) -> str:
         thread_id=case["thread_id"], assistant_id=ASSISTANT_ID
     )
 
-    timeout = 60
     start = time.time()
-    while time.time() - start < timeout:
+    while time.time() - start < TIMEOUT:
         status = client.beta.threads.runs.retrieve(
             thread_id=case["thread_id"], run_id=run.id
         )
